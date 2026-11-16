@@ -13,9 +13,14 @@ def cmd_prepare(args) -> int:
     result = prepare(args.audio, args.work_dir)
     doc = result["doc"]
 
+    metrics = result.get("metrics", {})
     print(f"\n分离产物：{result['separation']['vocal_path']}")
     print(f"伴奏产物：{result['separation']['accomp_path']}")
     print(f"人声 RMS：{result['separation']['rms_db']:.1f} dB")
+    print(
+        f"实测耗时：分离 {metrics.get('separate_sec')}s + 解析 {metrics.get('analyze_sec')}s"
+        f"（设备 {metrics.get('device')}，峰值显存 {metrics.get('peak_memory_mb')}MB）"
+    )
     if result["harmony_warning"]["risk"]:
         print(
             "[警告] 检测到疑似双 F0（和声）风险，跳变占比 "

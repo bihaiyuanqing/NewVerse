@@ -24,8 +24,10 @@ uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -r requirements-dev.txt
 ```
 
-已跑通组合锁定在 `requirements-lock.txt`（torch 2.15.0 / demucs 4.1.0 /
-whisperx 3.4.5 / torchcrepe 0.0.24，Python 3.11.12 arm64）。
+已跑通组合锁定在 `requirements-lock.txt`（torch 2.6.0 / torchaudio 2.6.0 /
+demucs 4.1.0 / whisperx 3.4.5 / torchcrepe 0.0.24，Python 3.11.12 arm64）。
+注意 torch 2.15 会导致 torchaudio.AudioMetaData 缺失，且其默认 weights_only=True
+会破坏 pyannote VAD 加载，故锁定 2.6.0（与 YingMusic 生态对齐）。
 
 ## 目录结构
 
@@ -48,17 +50,37 @@ deploy/           GPU 离线部署脚本
 
 | 任务 | 状态 | 验证方式 / 结果 |
 |---|---|---|
-| P0.1 环境与分离 | 代码完成，待素材实测 | `cli.py prepare` 产出 vocals.wav / no_vocals.wav，待人工试听 |
-| P0.2 SongDoc 落盘 | 代码完成，待素材实测 | `validate_song_doc` 校验时间单调、不重叠、无零时长 |
-| P0.3 打印每句字数 | 代码完成，待素材实测 | CLI 输出「第 N 句 \| X 字 \| 歌词」 |
-| P0.4 契约测试 | **通过** | `pytest tests/test_contracts.py` → 13 passed |
+| P0.1 环境与分离 | **实测通过** | 产出 vocals.wav（单声道）/ no_vocals.wav（立体声），人声 RMS -14.9 dBFS |
+| P0.2 SongDoc 落盘 | **实测通过** | `validate_song_doc` 校验时间单调、不重叠、无零时长，30 句全部通过 |
+| P0.3 打印每句字数 | **实测通过** | CLI 输出「第 N 句 \| X 字 \| 歌词」，句长 4-12 字，抽查见下表 |
+| P0.4 契约测试 | **通过** | `pytest tests/` → 16 passed（含间奏伪时间戳钳制、跨静音碎片合并用例） |
 
-实测回填区（拿到演示素材后填写，禁止编造）：
+实测回填区（素材 `assets/demo/huangshazima.mp3`，3 分 06 秒，44.1kHz 立体声，
+设备 MacBook Pro M2 Pro / MPS，WhisperX 走 CPU int8）：
 
-- 分离耗时 / 显存占用：待实测
-- WhisperX 对齐准确率（抽查 3 句）：待实测
-- torchcrepe 全曲 F0 耗时：待实测
-- 3 分钟歌曲全流程耗时（验收线 ≤5 分钟，本机 CPU/MPS 预计超标，仅 GPU 机作数）
+- 分离耗时约 56-62s（Demucs htdemucs_ft，MPS），产出人声 RMS -14.9 dBFS（健康）
+- 解析耗时约 83-87s（WhisperX small CPU 对齐 + torchcrepe full MPS 分块提 F0）
+- 全流程 prepare 约 140-149s（验收线 ≤5 分钟，本机 MPS+CPU 已达标；GPU 机待驱动）
+- MPS 峰值 allocated 149MB（torch 当前已分配快照，非进程驻留峰值）
+- F0 清音帧占比约 28%，和声跳变占比 0.10%（无和声风险）
+- 断句实测：能量门限 -28dB + 最小静音 0.15s，单字时长钳制上限 2.0s，
+  碎片合并间隙上限 1.0s；30 句全部满足单句 ≤12 字，契约校验通过
+- WhisperX 识别人工抽查：见下方抽查记录
+
+WhisperX small 识别抽查（注意 `huangshazima.lrc` 是改词目标稿《干啥子嘛》，
+与音频原曲《慌啥子嘛》文本不同，不能作为 ASR 基准；以下按原曲可辨识歌词人工
+评估。P0.3 只约束字数与断句，文本误差属 small 模型精度问题，留待 P1 换 large
+模型或人工校对）：
+
+| 句 | 识别结果 | 评估 |
+|---|---|---|
+| 第 15 句 | 一切都是最好的安排（9 字，2.36s） | 整句完整切出，文本正确 |
+| 第 6 句 | 这一刻就忘了你是谁（9 字，4.64s） | 整句完整切出，文本正确 |
+| 第 18 句 | 风啊静静吹（5 字，2.74s） | 断句正确，「静/轻」近音字识别误差 |
+| 间奏 91.2-107.9s | 两侧句子独立成句，无跨间奏粘合 | 16.6s 间奏隔离正确 |
+
+已知 small 模型典型误差：近音字（静/轻、整/枕）、连读字（街拍/节拍）。
+断句与字数契约不受影响，P1 改词前需人工校对或升级 large 模型。
 
 ### P1 · 改词与单句重唱（未开始）
 

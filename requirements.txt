@@ -2,15 +2,20 @@
 # 版本在本机（macOS arm64 / Python 3.11）跑通后用 uv pip freeze 锁定到 requirements-lock.txt。
 # 注意：GPU 机（Linux + CUDA）的 torch 必须走 cu121 index，见 deploy/offline 说明，
 # 不能直接使用本文件的默认 wheel。
-torch
-torchaudio
-demucs
-whisperx
-librosa
-soundfile
-numpy
-torchcrepe
-pyyaml
+# 锁定到本机跑通的组合：whisperx 3.4.5 依赖 torchaudio.AudioMetaData，
+# 该属性在 torchaudio 2.10+ 被移除，故与 YingMusic 生态对齐到 2.6.0
+torch==2.6.0
+torchaudio==2.6.0
+# numba 0.62 对 numpy 上限敏感，锁定 2.2.x
+numpy==2.2.6
+demucs==4.1.0
+whisperx==3.4.5
+librosa==0.10.2.post1
+soundfile==0.13.1
+torchcrepe==0.0.24
+# wav2vec2 中文对齐模型输出繁体，统一转简体
+zhconv==1.4.3
+pyyaml==6.0.3
 requests
 # P2 界面阶段启用
 gradio

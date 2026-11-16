@@ -10,16 +10,46 @@
 schema 与下游不变。
 """
 
+import functools
 import math
 import os
 
+import librosa
 import numpy as np
 import torch
+import zhconv
 
 from core.audio_io import read_audio
 from core.device import f0_device, whisper_compute_type, whisper_device
 from core.errors import AlignmentFailed, call_with_timeout
 from core.schema import F0_HOP_MS, SR, CharUnit, Phrase, SongDoc, validate_song_doc
+
+
+def _patch_torch_load_compat() -> None:
+    """torch 2.6 起 torch.load 默认 weights_only=True，导致 WhisperX 依赖的
+    Pyannote VAD 旧 checkpoint（含 omegaconf.ListConfig 等）无法加载。
+
+    本项目所有 checkpoint 均来自 HuggingFace 官方仓库等可信来源，
+    这里恢复 2.6 之前的默认行为，仅做进程级兼容，不改动模型文件。
+    """
+
+    if getattr(torch.load, "_newverse_patched", False):
+        return
+    orig_load = torch.load
+
+    @functools.wraps(orig_load)
+    def _load(*args, **kwargs):
+        # lightning 会显式传 weights_only=None，setdefault 拦不住，
+        # 必须把 None 也归一为 False（恢复 2.6 之前的行为）
+        if kwargs.get("weights_only") is None:
+            kwargs["weights_only"] = False
+        return orig_load(*args, **kwargs)
+
+    _load._newverse_patched = True
+    torch.load = _load
+
+
+_patch_torch_load_compat()
 
 # 断句硬约束
 SILENCE_GAP_SEC = 0.25
@@ -30,6 +60,8 @@ F0_HOP = F0_SR * F0_HOP_MS // 1000  # 160 采样
 # 相邻帧音高跳变超过该八度比例视为疑似双 F0（和声）候选，阈值待实测
 HARMONY_OCTAVE_JUMP = 0.9
 HARMONY_RISK_RATIO = 0.15
+# periodicity 低于该值判为清音（帧级 F0 置 None），阈值待实测回填
+UNVOICED_PERIODICITY = 0.2
 
 PUNCTUATION = set("，。！？、；：,.!?;:…—·~～\"'“”‘’()（）【】[]《》<>")
 
@@ -98,93 +130,184 @@ def _build_char_units(raw_chars: list) -> list:
         if start is None or end is None or end <= start:
             # 标点等无时间戳条目只参与断句，不进 CharUnit
             continue
-        units.append(CharUnit(idx=idx, ch=ch.strip(), start=float(start), end=float(end)))
+        # wav2vec2 中文对齐模型输出常含繁体，统一转简体
+        ch_simp = zhconv.convert(ch.strip(), "zh-cn")
+        units.append(CharUnit(idx=idx, ch=ch_simp, start=float(start), end=float(end)))
         idx += 1
     if not units:
         raise AlignmentFailed("字级对齐失败：没有拿到带时间戳的汉字，建议更换对齐模型后重试")
+
+    # WhisperX 对齐缺陷：长间奏前最后一个字的 end 会被拉长到整个间奏
+    # （实测出现单字 16.7s），用自适应上限钳制，正常拖腔（本曲最长 1.8s）不受影响
+    durations = np.array([u.end - u.start for u in units])
+    cap = max(CHAR_DURATION_CAP_SEC, float(np.median(durations)) * 3.0)
+    for unit in units:
+        if unit.end - unit.start > cap:
+            unit.end = unit.start + cap
     return units
 
 
-def _segment_phrases(raw_chars: list, units: list) -> list:
-    """标点 + 静音间隔双重切分，再按 12 字硬切。"""
+# 能量静音检测参数（实测回填，见 README 实测区）：
+# 文档原 SILENCE_GAP_SEC=0.25 针对字时间戳间隙设计，但 WhisperX 字时间戳首尾
+# 相接、间隙恒为 0，改用音频能量包络后，legato 演唱的句间气口普遍只有
+# 0.15~0.25s，-35dB/0.25s 会漏掉大部分气口；实测 -28dB/0.15s 能切出完整
+# 歌词句（如「黄沙慢慢漫来」「一切都是最好的安排」），故能量检测用独立参数
+SILENCE_RMS_DB = -28.0
+AUDIO_SILENCE_MIN_SEC = 0.15
+# 小于 MIN_PHRASE_CHARS 的碎片向邻句合并
+MIN_PHRASE_CHARS = 4
+# 碎片合并允许跨越的最大时间间隙（秒），超过视为真实静音切口，禁止粘合
+MERGE_MAX_GAP_SEC = 1.0
+# 单字时长硬上限（秒），与 3 倍中位时长取 max，用于钳制间奏拉长伪时间戳
+CHAR_DURATION_CAP_SEC = 2.0
 
-    # 以带时间戳的字为骨架，标点信息从 raw_chars 的相邻关系里取
-    timed = [u for u in units]
+
+def _detect_silence_boundaries(vocal_path: str) -> list:
+    """从人声轨能量包络检测静音段中点，作为断句候选边界。
+
+    WhisperX 字级时间戳首尾相接（实测字间隙恒为 0），文档要求的
+    「静音间隔 >0.25s」无法从时间戳得到，改为直接分析音频能量。
+    """
+
+    audio = read_audio(vocal_path, sr=SR, mono=True)
+    frame_len = int(0.02 * SR)
+    hop = int(0.01 * SR)
+    frames = librosa.util.frame(audio, frame_length=frame_len, hop_length=hop)
+    rms = np.sqrt(np.mean(frames ** 2, axis=0) + 1e-12)
+    db = 20.0 * np.log10(rms + 1e-12)
+    silent = db < SILENCE_RMS_DB
+
+    boundaries = []
+    i, n = 0, len(silent)
+    while i < n:
+        if not silent[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and silent[j]:
+            j += 1
+        if (j - i) * 0.01 >= AUDIO_SILENCE_MIN_SEC:
+            boundaries.append((i + j) / 2.0 * 0.01)
+        i = j
+    return boundaries
+
+
+def _silence_cut_indices(units: list, boundaries: list) -> set:
+    """把静音中点映射为字间断点，返回需要在其前面切分的 unit 下标集合。"""
+
+    cut_before = set()
+    for midpoint in boundaries:
+        j = next((k for k, u in enumerate(units) if u.start > midpoint), None)
+        if j:  # j=0（首字前的前奏静音）和 None（曲尾静音）不产生断点
+            cut_before.add(j)
+    return cut_before
+
+
+def _segment_phrases(raw_chars: list, units: list, silence_boundaries: list) -> list:
+    """静音边界 + 标点双重切分，再按单句不超过 12 字硬切，最后合并碎片。"""
+
+    cut_before = _silence_cut_indices(units, silence_boundaries)
     phrases = []
     current = []
-    prev_end = None
     unit_cursor = 0
 
     for item in raw_chars:
         ch, start, end = item["ch"], item["start"], item["end"]
-        is_punct = ch in PUNCTUATION
-        if is_punct:
+        if ch in PUNCTUATION:
             if current:
                 phrases.append(current)
                 current = []
             continue
         if start is None or end is None or end <= start:
             continue
-        unit = timed[unit_cursor]
+        unit = units[unit_cursor]
+        global_idx = unit_cursor
         unit_cursor += 1
 
-        need_cut = False
-        if prev_end is not None and unit.start - prev_end > SILENCE_GAP_SEC:
-            need_cut = True
-        if len(current) >= MAX_PHRASE_CHARS:
-            need_cut = True
-        if need_cut and current:
+        gap = unit.start - current[-1].end if current else 0.0
+        if current and (
+            global_idx in cut_before
+            or len(current) >= MAX_PHRASE_CHARS
+            or gap > MERGE_MAX_GAP_SEC
+        ):
             phrases.append(current)
             current = []
         current.append(unit)
-        prev_end = unit.end
 
     if current:
         phrases.append(current)
 
-    result = []
-    for i, group in enumerate(phrases):
-        result.append(
-            Phrase(
-                idx=i,
-                text="".join(c.ch for c in group),
-                start=group[0].start,
-                end=group[-1].end,
-                chars=group,
-            )
+    # 碎片合并：过短句并入邻句，合并后不得超过 12 字
+    # 但禁止跨真实静音合并：硬切相邻字间隙≈0，静音切口间隙明显更大
+    merged = []
+    for group in phrases:
+        gap = group[0].start - merged[-1][-1].end if merged else 0.0
+        if merged and (
+            len(group) < MIN_PHRASE_CHARS or len(merged[-1]) < MIN_PHRASE_CHARS
+        ) and gap <= MERGE_MAX_GAP_SEC and len(merged[-1]) + len(group) <= MAX_PHRASE_CHARS:
+            merged[-1].extend(group)
+        else:
+            merged.append(group)
+
+    return [
+        Phrase(
+            idx=i,
+            text="".join(c.ch for c in group),
+            start=group[0].start,
+            end=group[-1].end,
+            chars=group,
         )
-    return result
+        for i, group in enumerate(merged)
+    ]
 
 
-def _extract_f0(vocal_path: str, crepe_model: str, timeout: float) -> np.ndarray:
-    """整轨一次性提 F0，返回逐帧（10ms）基频，清音为 nan。"""
+def _extract_f0(
+    vocal_path: str,
+    crepe_model: str,
+    timeout: float,
+    batch_size: int = 512,
+) -> np.ndarray:
+    """整轨一次性提 F0，返回逐帧（10ms）基频，清音为 nan。
+
+    必须分块送批：3 分钟人声约 1.8 万帧，单批在 MPS 上会产生 18G 级
+    卷积缓冲导致 Invalid buffer size，batch_size 控制峰值显存/内存。
+    """
 
     import torchcrepe
 
     audio = read_audio(vocal_path, sr=F0_SR, mono=True)
     tensor = torch.from_numpy(audio).float().unsqueeze(0)
-    device = f0_device()
 
-    def _do():
-        return torchcrepe.predict(
+    def _do(device: torch.device):
+        # 同时取 periodicity，低置信帧判清音置 nan，满足 schema「清音为 None」
+        pitch, periodicity = torchcrepe.predict(
             tensor,
             F0_SR,
             hop_length=F0_HOP,
             model=crepe_model,
             device=device,
+            batch_size=batch_size,
             decoder=torchcrepe.decode.viterbi,
-            return_periodicity=False,
+            return_periodicity=True,
         )
+        periodicity = torchcrepe.filter.median(periodicity, 3)
+        pitch = torchcrepe.filter.mean(pitch, 3)
+        pitch[periodicity < UNVOICED_PERIODICITY] = float("nan")
+        return pitch
 
+    device = f0_device()
     try:
         f0 = call_with_timeout(
-            _do, timeout=timeout, timeout_msg=f"音高提取超时（>{timeout}s）"
+            _do, timeout=timeout, timeout_msg=f"音高提取超时（>{timeout}s）", device=device
         )
     except Exception:
         if device.type == "mps":
-            # MPS 不兼容时回退 CPU
+            # MPS 算子/内存不兼容时回退 CPU 重试
             f0 = call_with_timeout(
-                _do, timeout=timeout, timeout_msg=f"音高提取超时（>{timeout}s）"
+                _do,
+                timeout=timeout,
+                timeout_msg=f"音高提取超时（>{timeout}s）",
+                device=torch.device("cpu"),
             )
         else:
             raise
@@ -242,7 +365,8 @@ def analyze(
 
     raw_chars = _transcribe_chars(vocal_path, whisper_arch, timeout)
     units = _build_char_units(raw_chars)
-    phrases = _segment_phrases(raw_chars, units)
+    silence_boundaries = _detect_silence_boundaries(vocal_path)
+    phrases = _segment_phrases(raw_chars, units, silence_boundaries)
     f0_frames = _extract_f0(vocal_path, crepe_model, timeout)
     _attach_f0(units, f0_frames)
 

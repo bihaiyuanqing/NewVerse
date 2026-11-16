@@ -170,3 +170,52 @@ def test_rms_db_detects_silence():
     assert rms_db(np.zeros(1000, dtype=np.float32)) == -120.0
     loud = np.ones(1000, dtype=np.float32) * 0.5
     assert rms_db(loud) > -10
+
+
+# ---------- 间奏伪时间戳钳制与跨静音碎片合并 ----------
+
+def test_build_char_units_clamps_interlude_artifact():
+    from core.analyze import CHAR_DURATION_CAP_SEC, _build_char_units
+
+    raw = [
+        {"ch": ch, "start": i * 0.3, "end": i * 0.3 + 0.3}
+        for i, ch in enumerate("黄沙慢慢漫来")
+    ]
+    # 最后一个字被 WhisperX 拉长到 16 秒（间奏伪时间戳）
+    raw.append({"ch": "排", "start": 1.8, "end": 17.8})
+    units = _build_char_units(raw)
+    last = units[-1]
+    assert last.ch == "排"
+    assert last.end - last.start == pytest.approx(CHAR_DURATION_CAP_SEC)
+    # 正常字不受影响
+    assert units[0].end - units[0].start == pytest.approx(0.3)
+
+
+def test_segment_never_merges_fragment_across_silence_gap():
+    from core.analyze import _segment_phrases
+
+    # 12 字句 + 单字碎片（紧随其后，间隙 0）+ 16s 间奏 + 下一段 7 字句
+    units = [make_char(i, ch, i * 0.3) for i, ch in enumerate("又是清醒又是醉别把所有压")]
+    units.append(make_char(12, "排", 12 * 0.3))
+    for j, ch in enumerate("写下一声的疲惫"):
+        units.append(make_char(13 + j, ch, 19.0 + j * 0.3))
+    raw = [{"ch": c.ch, "start": c.start, "end": c.end} for c in units]
+
+    phrases = _segment_phrases(raw, units, [])
+    texts = ["".join(c.ch for c in g.chars) for g in phrases]
+    # 间奏两侧不得粘合
+    assert not any("排写" in t for t in texts)
+    assert all(p.duration < 10 for p in phrases)
+
+
+def test_segment_merges_adjacent_fragment_without_gap():
+    from core.analyze import _segment_phrases
+
+    # 标点切出 3 字碎片 + 5 字句，相邻无静音，合并后 8 字 ≤12，应粘合
+    chars = "力自己背人生路还远"
+    units = [make_char(i, ch, i * 0.3) for i, ch in enumerate(chars)]
+    raw = [{"ch": c.ch, "start": c.start, "end": c.end} for c in units]
+    raw.insert(3, {"ch": "，", "start": None, "end": None})
+    phrases = _segment_phrases(raw, units, [])
+    assert len(phrases) == 1
+    assert phrases[0].n_syl == 9
