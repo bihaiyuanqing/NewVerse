@@ -5,7 +5,8 @@ import sys
 
 from core.device import describe
 from core.errors import NewVerseError
-from pipeline import prepare
+from core.schema import SongDoc
+from pipeline import prepare, regenerate_line, render
 
 
 def cmd_prepare(args) -> int:
@@ -34,6 +35,30 @@ def cmd_prepare(args) -> int:
     return 0
 
 
+def cmd_regenerate(args) -> int:
+    doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
+    result = regenerate_line(
+        doc, args.idx, args.theme, args.work_dir, mock=args.mock, seed=args.seed
+    )
+    print(
+        f"第 {result['idx']} 句重唱完成（{result['n_syl']} 字，耗时 {result['sing_sec']}s）\n"
+        f"  原句：{result['old_text']}\n"
+        f"  新词：{result['new_text']}\n"
+        f"  新声：{result['new_vocal_path']}"
+    )
+    return 0
+
+
+def cmd_render(args) -> int:
+    doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
+    edited = sum(1 for p in doc.phrases if p.edited)
+    if edited == 0:
+        print("[警告] 当前没有任何已编辑句子，输出将与原曲一致（仍走轻混响）")
+    out_path = render(doc, args.output, reverb=not args.no_reverb)
+    print(f"混音完成：共替换 {edited} 句，输出 {out_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="NewVerse 音乐改词 Demo")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -45,6 +70,20 @@ def main() -> int:
     p_prepare.add_argument("--crepe-model", default="full")
     p_prepare.add_argument("--demucs-model", default="htdemucs_ft")
     p_prepare.set_defaults(func=cmd_prepare)
+
+    p_regen = sub.add_parser("regenerate", help="改写并重唱指定句")
+    p_regen.add_argument("idx", type=int, help="句序号（从 0 开始）")
+    p_regen.add_argument("-o", "--work-dir", default="output/run")
+    p_regen.add_argument("-t", "--theme", default="", help="改词主题")
+    p_regen.add_argument("--mock", action="store_true", help="强制使用内置 Mock 改词")
+    p_regen.add_argument("--seed", type=int, default=666)
+    p_regen.set_defaults(func=cmd_regenerate)
+
+    p_render = sub.add_parser("render", help="合成整曲")
+    p_render.add_argument("-o", "--work-dir", default="output/run")
+    p_render.add_argument("output", help="输出 wav 路径")
+    p_render.add_argument("--no-reverb", action="store_true", help="关闭轻混响")
+    p_render.set_defaults(func=cmd_render)
 
     args = parser.parse_args()
     try:

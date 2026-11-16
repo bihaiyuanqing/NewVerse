@@ -1,0 +1,49 @@
+# YingMusic-Singer-Plus 推理专用精简依赖（GPU 机独立 venv：/opt/yingmusic-venv）
+# 仅覆盖 deploy/sing_adapter.py 推理链路的真实导入，剔除训练/演示重依赖
+# （mamba_ssm、bitsandbytes、modelscope、wandb、gradio、sox、torchcodec、pyaudio 等）
+# 版本对齐上游 requirements.txt，走内网 bytedpypi 安装。
+
+# ---- 深度学习框架 ----
+torch==2.6.0
+torchaudio==2.6.0
+numpy
+scipy
+numba==0.62.1
+
+# ---- 音频 ----
+librosa==0.10.2.post1
+soundfile==0.13.1
+soxr
+resampy
+audioread
+descript-audio-codec==1.0.0
+
+# ---- 模型/配置工具 ----
+hydra-core==1.3.2
+omegaconf==2.3.0
+einops==0.8.1
+einops-exts==0.0.4
+ema-pytorch==0.7.7
+huggingface-hub==0.35.3
+safetensors==0.6.2
+transformers==4.57.6
+tokenizers==0.22.2
+torchdiffeq==0.2.5
+vector-quantize-pytorch==1.23.2
+x-transformers==2.1.2
+alias-free-torch==0.0.6
+
+# ---- 中英 g2p / 分词 ----
+cn2an==0.5.23
+jieba==0.42.1
+pypinyin==0.55.0
+inflect==7.5.0
+py3langid==0.3.0
+phonemizer==3.3.0
+onnxruntime==1.23.2
+
+# ---- 基础工具 ----
+tqdm
+pyyaml
+packaging
+regex

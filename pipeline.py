@@ -11,7 +11,11 @@ import torch
 
 from core.analyze import analyze, detect_harmony_risk
 from core.device import device_kind
+from core.errors import NewVerseError
+from core.mix import render_mix
+from core.rewrite import rewrite_line
 from core.separate import separate
+from core.sing import sing_line
 
 
 def _peak_memory_mb() -> float:
@@ -60,11 +64,52 @@ def prepare(src_path: str, work_dir: str, **kwargs) -> dict:
     return {"doc": doc, "separation": sep, "harmony_warning": harmony, "metrics": metrics}
 
 
-def regenerate_line(doc, idx: int, theme: str, work_dir: str):
-    """P1 实现：改一句，调 rewrite 再调 sing。"""
-    raise NotImplementedError("P1 阶段实现")
+def regenerate_line(doc, idx: int, theme: str, work_dir: str, **kwargs) -> dict:
+    """改一句：等字数改词 → 单句重唱 → 回写 SongDoc 并落盘。
+
+    界面/CLI 只允许通过本函数触发单句重生成，不得直接调 core。
+    """
+
+    if not 0 <= idx < len(doc.phrases):
+        raise NewVerseError(f"句序号越界：{idx}，当前共 {len(doc.phrases)} 句")
+    phrase = doc.phrases[idx]
+
+    new_text = rewrite_line(
+        phrase.text,
+        phrase.n_syl,
+        theme,
+        mock=kwargs.get("mock", False),
+        max_retry=kwargs.get("rewrite_retry", 3),
+        timeout=kwargs.get("rewrite_timeout", 30.0),
+    )
+
+    t0 = time.time()
+    _, new_vocal_path = sing_line(
+        phrase,
+        doc.vocal_path,
+        new_text,
+        work_dir,
+        timeout=kwargs.get("sing_timeout", 300.0),
+        seed=kwargs.get("seed", 666),
+    )
+    sing_sec = round(time.time() - t0, 1)
+
+    phrase.new_text = new_text
+    phrase.edited = True
+    phrase.new_vocal_path = new_vocal_path
+    doc.to_json(os.path.join(work_dir, "song_doc.json"))
+
+    return {
+        "idx": idx,
+        "old_text": phrase.text,
+        "new_text": new_text,
+        "n_syl": phrase.n_syl,
+        "new_vocal_path": new_vocal_path,
+        "sing_sec": sing_sec,
+    }
 
 
-def render(doc, out_path: str):
-    """P1/P2 实现：合成整曲。"""
-    raise NotImplementedError("P1 阶段实现")
+def render(doc, out_path: str, **kwargs) -> str:
+    """把全部已编辑句子替换回人声轨，加轻混响后与伴奏合成整曲。"""
+
+    return render_mix(doc, out_path, reverb=kwargs.get("reverb", True))
