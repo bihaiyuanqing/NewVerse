@@ -1,0 +1,16 @@
+# 技术实现文档第四节（二）规定的运行时依赖。
+# 版本在本机（macOS arm64 / Python 3.11）跑通后用 uv pip freeze 锁定到 requirements-lock.txt。
+# 注意：GPU 机（Linux + CUDA）的 torch 必须走 cu121 index，见 deploy/offline 说明，
+# 不能直接使用本文件的默认 wheel。
+torch
+torchaudio
+demucs
+whisperx
+librosa
+soundfile
+numpy
+torchcrepe
+pyyaml
+requests
+# P2 界面阶段启用
+gradio
