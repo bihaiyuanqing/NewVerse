@@ -41,12 +41,29 @@ core/analyze.py   WhisperX 字级对齐 + 断句 + 整轨 F0
 pipeline.py       对外门面 prepare/regenerate_line/render
 cli.py            命令行入口
 tests/            P0.4 契约测试
-deploy/           GPU 离线部署脚本
+deploy/           GPU 机部署三步（01 Mac 备料传输 / 02 驱动 / 03 Python 环境）
 ```
+
+## GPU 机实测（Debian 10 / 8×L20 46G / 内网隔离）
+
+驱动与环境按 `deploy/` 三步脚本搭建（内网镜像无 .run，采用 focal R535 deb
+解包编译；Python 用 standalone 3.10；依赖走 bytedpypi；模型缓存从本机 rsync）。
+同一首 3 分 06 秒素材、单卡 CUDA_VISIBLE_DEVICES=0：
+
+| 指标 | 本机 M2 Pro（MPS+CPU） | GPU 机单卡 L20（cuda/float16） |
+|---|---|---|
+| 分离耗时 | 56-62s | 17.6s |
+| 解析耗时 | 83-87s | 15.2s |
+| 全流程 prepare | 140-149s | **约 33s（提速 4.4 倍）** |
+| 峰值显存 | 149MB（MPS allocated） | 2601MB（46G 卡占用 5.6%） |
+| 产物 | 30 句，契约通过 | 31 句，契约通过，均无跨间奏句 |
+
+两套设备产出句数差 1 属 float16/int8 数值差异导致的边界抖动，契约指标
+（句长 ≤12、时间单调不重叠、无零时长、间奏隔离）两端全部通过。
 
 ## 阶段进展
 
-### P0 · 链路打通（进行中）
+### P0 · 链路打通（已完成，本机 + GPU 双端实测通过）
 
 | 任务 | 状态 | 验证方式 / 结果 |
 |---|---|---|

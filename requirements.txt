@@ -1,7 +1,8 @@
 # 技术实现文档第四节（二）规定的运行时依赖。
 # 版本在本机（macOS arm64 / Python 3.11）跑通后用 uv pip freeze 锁定到 requirements-lock.txt。
-# 注意：GPU 机（Linux + CUDA）的 torch 必须走 cu121 index，见 deploy/offline 说明，
-# 不能直接使用本文件的默认 wheel。
+# GPU 机实测：PyPI 默认 linux wheel 即 torch 2.6.0+cu124，R535 驱动经 CUDA minor-version
+# 兼容可直接运行，无需额外 CUDA index；详见 deploy/03_setup_gpu_env.sh。
+# 另需注意 pyannote/onnxruntime 依赖 cuDNN 8，须与 torch 自带的 cuDNN 9 隔离共存。
 # 锁定到本机跑通的组合：whisperx 3.4.5 依赖 torchaudio.AudioMetaData，
 # 该属性在 torchaudio 2.10+ 被移除，故与 YingMusic 生态对齐到 2.6.0
 torch==2.6.0
