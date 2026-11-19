@@ -12,6 +12,7 @@ import torch
 from core.analyze import analyze, detect_harmony_risk
 from core.device import device_kind
 from core.errors import NewVerseError
+from core.lyric_align import apply_target_lyrics
 from core.mix import render_mix
 from core.rewrite import rewrite_line
 from core.separate import separate
@@ -152,6 +153,44 @@ def regenerate_all(doc, theme: str, work_dir: str, **kwargs) -> dict:
         "sing_sec": sing_sec,
         "details": rewritten,
     }
+
+
+def apply_lyrics(doc, lrc_path: str, work_dir: str, **kwargs) -> tuple:
+    """用 lrc 目标歌词重建 SongDoc（强制对齐 + DTW 等长槽位）。"""
+
+    return apply_target_lyrics(
+        doc,
+        lrc_path,
+        work_dir,
+        whisper_arch=kwargs.get("whisper_model", "small"),
+        timeout=kwargs.get("align_timeout", 900.0),
+    )
+
+
+def resing_all(doc, work_dir: str, **kwargs) -> dict:
+    """按 SongDoc 中已有的 new_text 全曲批量重唱（不做改词，词来自 apply_lyrics）。"""
+
+    missing = [p.idx for p in doc.phrases if not p.new_text]
+    if missing:
+        raise NewVerseError(f"以下句子缺少目标歌词 new_text，无法重唱：{missing}")
+
+    items = [(p, p.new_text) for p in doc.phrases]
+    t0 = time.time()
+    out_map = sing_lines(
+        doc,
+        items,
+        work_dir,
+        timeout=kwargs.get("sing_timeout", 1800.0),
+        seed=kwargs.get("seed", 666),
+    )
+    sing_sec = round(time.time() - t0, 1)
+
+    for phrase, _ in items:
+        phrase.edited = True
+        phrase.new_vocal_path = out_map[phrase.idx]
+    doc.to_json(os.path.join(work_dir, "song_doc.json"))
+
+    return {"total": len(items), "sing_sec": sing_sec}
 
 
 def render(doc, out_path: str, **kwargs) -> str:

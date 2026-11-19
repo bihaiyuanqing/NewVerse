@@ -6,7 +6,14 @@ import sys
 from core.device import describe
 from core.errors import NewVerseError
 from core.schema import SongDoc
-from pipeline import prepare, regenerate_all, regenerate_line, render
+from pipeline import (
+    apply_lyrics,
+    prepare,
+    regenerate_all,
+    regenerate_line,
+    render,
+    resing_all,
+)
 
 
 def cmd_prepare(args) -> int:
@@ -60,6 +67,30 @@ def cmd_regenerate_all(args) -> int:
     return 0
 
 
+def cmd_apply_lyrics(args) -> int:
+    doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
+    new_doc, report = apply_lyrics(doc, args.lrc, args.work_dir)
+    print(
+        f"目标歌词已对齐：lrc {report['lrc_lines']} 行 / 目标 {report['target_chars']} 字，"
+        f"重建为 {report['phrases']} 句"
+    )
+    print(
+        f"原 ASR {report['asr_chars']} 字，DTW 跳过 {len(report['skipped_asr_idx'])} 个"
+        f"重复/误识别字：{''.join(report['skipped_asr_chars']) or '无'}"
+    )
+    for phrase in new_doc.phrases:
+        print(f"  #{phrase.idx:02d} 原「{phrase.text}」 → 唱「{phrase.new_text}」")
+    print(f"\n新 SongDoc 已落盘：{args.work_dir}/song_doc.json，可继续 sing-all / render")
+    return 0
+
+
+def cmd_sing_all(args) -> int:
+    doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
+    result = resing_all(doc, args.work_dir, seed=args.seed)
+    print(f"全曲重唱完成：共 {result['total']} 句，重唱总耗时 {result['sing_sec']}s")
+    return 0
+
+
 def cmd_render(args) -> int:
     doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
     edited = sum(1 for p in doc.phrases if p.edited)
@@ -96,6 +127,16 @@ def main() -> int:
     p_all.add_argument("--mock", action="store_true", help="强制使用内置 Mock 改词")
     p_all.add_argument("--seed", type=int, default=666)
     p_all.set_defaults(func=cmd_regenerate_all)
+
+    p_lyrics = sub.add_parser("apply-lyrics", help="用 lrc 目标歌词强制对齐重建 SongDoc")
+    p_lyrics.add_argument("lrc", help="目标歌词 lrc 路径")
+    p_lyrics.add_argument("-o", "--work-dir", default="output/run")
+    p_lyrics.set_defaults(func=cmd_apply_lyrics)
+
+    p_sing = sub.add_parser("sing-all", help="按 SongDoc 的 new_text 全曲批量重唱")
+    p_sing.add_argument("-o", "--work-dir", default="output/run")
+    p_sing.add_argument("--seed", type=int, default=666)
+    p_sing.set_defaults(func=cmd_sing_all)
 
     p_render = sub.add_parser("render", help="合成整曲")
     p_render.add_argument("-o", "--work-dir", default="output/run")
