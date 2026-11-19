@@ -51,6 +51,34 @@ def test_llm_accepts_equal_length_candidate(monkeypatch):
     assert rewrite_line("原句四字", 4) == "新词四字"
 
 
+# ---------- pipeline.regenerate_all：全曲改词与回写 ----------
+
+def test_regenerate_all_rewrites_every_phrase(monkeypatch, tmp_path):
+    from pipeline import regenerate_all
+
+    phrases = [
+        Phrase(idx=0, text="黄沙慢慢漫来", start=0.0, end=1.0,
+               chars=[CharUnit(idx=i, ch=ch, start=i * 0.1, end=i * 0.1 + 0.1)
+                      for i, ch in enumerate("黄沙慢慢漫来")]),
+        Phrase(idx=1, text="风啊静静吹", start=1.0, end=2.0,
+               chars=[CharUnit(idx=i, ch=ch, start=1.0 + i * 0.1, end=1.0 + i * 0.1 + 0.1)
+                      for i, ch in enumerate("风啊静静吹")]),
+    ]
+    doc = SongDoc(src_path="x.mp3", vocal_path="v.wav", accomp_path="a.wav", phrases=phrases)
+
+    def fake_sing_lines(doc, items, work_dir, **kwargs):
+        return {p.idx: str(tmp_path / f"new_{p.idx}.wav") for p, _ in items}
+
+    monkeypatch.setattr("pipeline.sing_lines", fake_sing_lines)
+    result = regenerate_all(doc, "", str(tmp_path), mock=True)
+
+    assert result["total"] == 2
+    assert result["text_changed"] == 2  # 两句都命中词表
+    assert all(p.edited and p.new_vocal_path and p.new_text for p in doc.phrases)
+    assert doc.phrases[0].new_text == "干啥快快漫来"
+    assert (tmp_path / "song_doc.json").exists()
+
+
 # ---------- sing：时长对齐 ----------
 
 def test_fit_duration_exact_length_passthrough():
@@ -69,6 +97,23 @@ def test_fit_duration_stretches_to_target():
 def test_fit_duration_rejects_extreme_mismatch():
     with pytest.raises(SingFailed, match="时长偏差过大"):
         fit_duration(np.zeros(SR, dtype=np.float32), SR, SR * 10)
+
+
+def test_aligned_vocal_matches_splice_region_rounding():
+    """采样口径必须与 splice 一致：round(end*SR)-round(start*SR)。
+
+    刻意构造使 round(duration*SR) 与分别 round 相差 1 采样的边界。
+    """
+    from core.audio_io import splice
+
+    start, end = 4.6 / SR, 13.4 / SR
+    target = round(end * SR) - round(start * SR)
+    assert target != round((end - start) * SR)  # 确认该组数据确实能触发差异
+    raw = np.zeros(16, dtype=np.float32)
+    aligned = fit_duration(raw, SR, target)
+    base = np.zeros(SR, dtype=np.float32)
+    # 口径一致时 splice 不再抛「替换段长度不匹配」
+    splice(base, aligned, SR, start, end)
 
 
 def test_fit_duration_rejects_stereo():

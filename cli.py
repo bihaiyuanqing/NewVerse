@@ -6,7 +6,7 @@ import sys
 from core.device import describe
 from core.errors import NewVerseError
 from core.schema import SongDoc
-from pipeline import prepare, regenerate_line, render
+from pipeline import prepare, regenerate_all, regenerate_line, render
 
 
 def cmd_prepare(args) -> int:
@@ -49,6 +49,17 @@ def cmd_regenerate(args) -> int:
     return 0
 
 
+def cmd_regenerate_all(args) -> int:
+    doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
+    result = regenerate_all(doc, args.theme, args.work_dir, mock=args.mock, seed=args.seed)
+    print(f"全曲重唱完成：共 {result['total']} 句，其中 {result['text_changed']} 句文本发生变化，"
+          f"重唱总耗时 {result['sing_sec']}s")
+    for item in result["details"]:
+        flag = " " if item["old"] == item["new"] else "✎"
+        print(f"  {flag} #{item['idx']:02d} {item['old']} → {item['new']}")
+    return 0
+
+
 def cmd_render(args) -> int:
     doc = SongDoc.from_json(f"{args.work_dir}/song_doc.json")
     edited = sum(1 for p in doc.phrases if p.edited)
@@ -78,6 +89,13 @@ def main() -> int:
     p_regen.add_argument("--mock", action="store_true", help="强制使用内置 Mock 改词")
     p_regen.add_argument("--seed", type=int, default=666)
     p_regen.set_defaults(func=cmd_regenerate)
+
+    p_all = sub.add_parser("regenerate-all", help="全曲逐句改词并重唱（模型只加载一次）")
+    p_all.add_argument("-o", "--work-dir", default="output/run")
+    p_all.add_argument("-t", "--theme", default="", help="改词主题")
+    p_all.add_argument("--mock", action="store_true", help="强制使用内置 Mock 改词")
+    p_all.add_argument("--seed", type=int, default=666)
+    p_all.set_defaults(func=cmd_regenerate_all)
 
     p_render = sub.add_parser("render", help="合成整曲")
     p_render.add_argument("-o", "--work-dir", default="output/run")

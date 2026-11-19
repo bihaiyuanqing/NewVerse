@@ -15,7 +15,7 @@ from core.errors import NewVerseError
 from core.mix import render_mix
 from core.rewrite import rewrite_line
 from core.separate import separate
-from core.sing import sing_line
+from core.sing import sing_line, sing_lines
 
 
 def _peak_memory_mb() -> float:
@@ -106,6 +106,51 @@ def regenerate_line(doc, idx: int, theme: str, work_dir: str, **kwargs) -> dict:
         "n_syl": phrase.n_syl,
         "new_vocal_path": new_vocal_path,
         "sing_sec": sing_sec,
+    }
+
+
+def regenerate_all(doc, theme: str, work_dir: str, **kwargs) -> dict:
+    """全曲逐句改词重唱：每句先等字数改词，再一次性批量重唱（模型只加载一次）。
+
+    返回汇总信息；改词后与原句相同的句子也会重唱（模型重唱本身即产生新声）。
+    """
+
+    items = []
+    rewritten = []
+    for phrase in doc.phrases:
+        new_text = rewrite_line(
+            phrase.text,
+            phrase.n_syl,
+            theme,
+            mock=kwargs.get("mock", False),
+            max_retry=kwargs.get("rewrite_retry", 3),
+            timeout=kwargs.get("rewrite_timeout", 30.0),
+        )
+        items.append((phrase, new_text))
+        rewritten.append({"idx": phrase.idx, "old": phrase.text, "new": new_text})
+
+    t0 = time.time()
+    out_map = sing_lines(
+        doc,
+        items,
+        work_dir,
+        timeout=kwargs.get("sing_timeout", 1800.0),
+        seed=kwargs.get("seed", 666),
+    )
+    sing_sec = round(time.time() - t0, 1)
+
+    for phrase, new_text in items:
+        phrase.new_text = new_text
+        phrase.edited = True
+        phrase.new_vocal_path = out_map[phrase.idx]
+    doc.to_json(os.path.join(work_dir, "song_doc.json"))
+
+    changed = sum(1 for r in rewritten if r["old"] != r["new"])
+    return {
+        "total": len(items),
+        "text_changed": changed,
+        "sing_sec": sing_sec,
+        "details": rewritten,
     }
 
 
