@@ -49,8 +49,11 @@ import torchaudio
 def _load_model(device: str):
     from src.YingMusicSinger.infer.YingMusicSinger import YingMusicSinger
 
-    print(f"[sing_adapter] device={device} loading model ...", flush=True)
-    model = YingMusicSinger.from_pretrained("ASLP-lab/YingMusic-Singer")
+    # 模型可由环境变量覆盖，默认 Plus（与 Mac Gradio 联调保持一致）；
+    # 离线 GPU 机依赖 HF 缓存，需提前把对应模型同步到 ~/.cache/huggingface/hub。
+    model_id = os.environ.get("NEWVERSE_YING_MODEL", "ASLP-lab/YingMusic-Singer-Plus")
+    print(f"[sing_adapter] device={device} model={model_id} loading ...", flush=True)
+    model = YingMusicSinger.from_pretrained(model_id)
     model = model.to(device)
     model.eval()
     return model
