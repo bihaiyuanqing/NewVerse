@@ -34,6 +34,31 @@ DEFAULT_TIMEOUT = 300.0
 BATCH_TIMEOUT = 1800.0
 # 变速率保护：超过 2 倍伸缩说明合成严重异常，不再硬拉
 MAX_STRETCH_RATE = 2.0
+# 句级电平匹配：重唱新声响度与被替换原句对齐，避免人声偏轻/忽大忽小导致与伴奏脱节
+MAX_GAIN_DB = 9.0          # 增益上下限（dB），防止异常句被过度放大
+PEAK_CEILING = 0.99        # 峰值保护上限，避免匹配后削波
+
+
+def _rms(audio: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(audio.astype(np.float64)))))
+
+
+def match_rms(audio: np.ndarray, ref_path: str) -> np.ndarray:
+    """把重唱音频的 RMS 对齐到原句人声片段，带增益限幅与峰值保护。"""
+
+    ref = read_audio(ref_path, sr=SR, mono=True)
+    rms_new, rms_ref = _rms(audio), _rms(ref)
+    if rms_new < 1e-8 or rms_ref < 1e-8:
+        return audio.astype(np.float32)
+
+    lo, hi = 10.0 ** (-MAX_GAIN_DB / 20.0), 10.0 ** (MAX_GAIN_DB / 20.0)
+    gain = float(np.clip(rms_ref / rms_new, lo, hi))
+    out = audio.astype(np.float32) * gain
+
+    peak = float(np.max(np.abs(out)))
+    if peak > PEAK_CEILING:  # 削波保护，宁可略低于目标响度也不爆音
+        out = out * (PEAK_CEILING / peak)
+    return out.astype(np.float32)
 
 
 def fit_duration(audio: np.ndarray, sr: int, target_samples: int) -> np.ndarray:
@@ -87,8 +112,8 @@ def _line_paths(work_dir: str, idx: int) -> dict:
     }
 
 
-def _post_process(raw_path: str, phrase, new_path: str) -> str:
-    """raw 立体声 → 单声道 → 时长对齐原句 → 落盘，返回新声路径。"""
+def _post_process(raw_path: str, ref_path: str, phrase, new_path: str) -> str:
+    """raw 立体声 → 单声道 → 时长对齐原句 → 电平匹配原句 → 落盘，返回新声路径。"""
 
     if not os.path.exists(raw_path):
         raise SingFailed(f"第 {phrase.idx} 句重唱未产出音频文件：{raw_path}")
@@ -97,6 +122,7 @@ def _post_process(raw_path: str, phrase, new_path: str) -> str:
     # 不能用 round(duration*SR)，浮点舍入可能差 1 采样导致 splice 报错
     target_samples = round(phrase.end * SR) - round(phrase.start * SR)
     aligned = fit_duration(raw, SR, target_samples)
+    aligned = match_rms(aligned, ref_path)
     write_audio(new_path, aligned, SR)
     return new_path
 
@@ -147,7 +173,7 @@ def sing_line(
             f"第 {phrase.idx} 句重唱失败（退出码 {proc.returncode}）：" + " / ".join(tail)
         )
 
-    new_path = _post_process(paths["raw"], phrase, paths["new"])
+    new_path = _post_process(paths["raw"], paths["ref"], phrase, paths["new"])
     return read_audio(new_path, sr=SR, mono=True), new_path
 
 
@@ -230,5 +256,5 @@ def sing_lines(
     for r in results:
         phrase = phrase_by_idx[r["idx"]]
         paths = path_map[r["idx"]]
-        out_map[r["idx"]] = _post_process(paths["raw"], phrase, paths["new"])
+        out_map[r["idx"]] = _post_process(paths["raw"], paths["ref"], phrase, paths["new"])
     return out_map

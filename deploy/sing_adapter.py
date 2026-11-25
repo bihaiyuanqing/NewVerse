@@ -59,10 +59,11 @@ def _load_model(device: str):
     return model
 
 
-def _synthesize(model, device: str, task: dict, seed: int) -> tuple:
+def _synthesize(model, device: str, task: dict, seed: int, nfe_step: int, cfg_strength: float) -> tuple:
     print(
         f"[sing_adapter] idx={task.get('idx')} ref={task['ref_text']!r} "
-        f"target={task['target_text']!r}",
+        f"target={task['target_text']!r} nfe={task.get('nfe_step', nfe_step)} "
+        f"cfg={task.get('cfg_strength', cfg_strength)}",
         flush=True,
     )
     with torch.inference_mode():
@@ -72,6 +73,8 @@ def _synthesize(model, device: str, task: dict, seed: int) -> tuple:
             ref_text=task["ref_text"].strip(),
             target_text=task["target_text"].strip(),
             lrc_align_mode="sentence_level",
+            nfe_step=int(task.get("nfe_step", nfe_step)),
+            cfg_strength=float(task.get("cfg_strength", cfg_strength)),
             seed=task.get("seed", seed),
         )
     torchaudio.save(task["output"], audio.to("cpu"), sample_rate=sr)
@@ -87,6 +90,9 @@ def main() -> int:
     parser.add_argument("--tasks", help="批量任务 JSON 路径")
     parser.add_argument("--results", help="批量结果 JSON 路径")
     parser.add_argument("--seed", type=int, default=666)
+    # 合成质量参数，默认与模型默认一致（零行为变化）；task 内可逐句覆盖
+    parser.add_argument("--nfe-step", type=int, default=32, help="ODE 采样步数，越高发音越清晰")
+    parser.add_argument("--cfg-strength", type=float, default=3.0, help="CFG 文本遵循度，越高越贴词")
     args = parser.parse_args()
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -107,6 +113,8 @@ def main() -> int:
                 "output": args.output,
             },
             args.seed,
+            args.nfe_step,
+            args.cfg_strength,
         )
         print(f"[sing_adapter] saved {args.output}", flush=True)
         return 0
@@ -118,7 +126,7 @@ def main() -> int:
     for i, task in enumerate(tasks, 1):
         t0 = time.time()
         try:
-            sr = _synthesize(model, device, task, args.seed)
+            sr = _synthesize(model, device, task, args.seed, args.nfe_step, args.cfg_strength)
             results.append(
                 {
                     "idx": task.get("idx"),

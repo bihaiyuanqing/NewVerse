@@ -11,7 +11,7 @@ from core.errors import MixFailed, RewriteFailed, SingFailed
 from core.mix import apply_light_reverb, render_mix
 from core.rewrite import count_syllables, rewrite_line
 from core.schema import SR, CharUnit, Phrase, SongDoc
-from core.sing import fit_duration
+from core.sing import fit_duration, match_rms
 
 
 # ---------- rewrite：等字数硬约束 ----------
@@ -119,6 +119,57 @@ def test_aligned_vocal_matches_splice_region_rounding():
 def test_fit_duration_rejects_stereo():
     with pytest.raises(SingFailed):
         fit_duration(np.zeros((2, 100), dtype=np.float32), SR, 100)
+
+
+# ---------- sing：句级 RMS 电平匹配 ----------
+
+def _rms(x: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(x.astype(np.float64)))))
+
+
+def test_match_rms_aligns_to_ref_level(tmp_path):
+    ref = (np.random.default_rng(1).standard_normal(SR) * 0.10).astype(np.float32)
+    new = (np.random.default_rng(2).standard_normal(SR) * 0.05).astype(np.float32)
+    ref_path = str(tmp_path / "ref.wav")
+    sf.write(ref_path, ref, SR)
+    out = match_rms(new, ref_path)
+    # 增益 2x（6dB）在 ±9dB 限幅内，输出 RMS 应贴近原句
+    assert abs(_rms(out) - _rms(ref)) < 0.005
+
+
+def test_match_rms_respects_gain_limit(tmp_path):
+    from core.sing import MAX_GAIN_DB
+
+    ref = np.full(SR, 0.5, dtype=np.float32)
+    new = np.full(SR, 0.01, dtype=np.float32)
+    ref_path = str(tmp_path / "ref.wav")
+    sf.write(ref_path, ref, SR)
+    out = match_rms(new, ref_path)
+    max_gain = 10.0 ** (MAX_GAIN_DB / 20.0)
+    # 理论增益 50x 被限幅，实际增益不超过上限
+    assert np.max(np.abs(out)) <= 0.01 * max_gain * 1.01
+
+
+def test_match_rms_peak_ceiling_prevents_clipping(tmp_path):
+    from core.sing import PEAK_CEILING
+
+    # new 含高尖峰但 RMS 低，ref 很响需要放大，触发峰值保护
+    new = np.full(SR, 0.02, dtype=np.float32)
+    new[::100] = 0.9
+    ref = np.full(SR, 0.5, dtype=np.float32)
+    ref_path = str(tmp_path / "ref.wav")
+    sf.write(ref_path, ref, SR)
+    out = match_rms(new, ref_path)
+    assert np.max(np.abs(out)) <= PEAK_CEILING + 1e-6
+
+
+def test_match_rms_silence_passthrough(tmp_path):
+    ref = np.full(SR, 0.2, dtype=np.float32)
+    ref_path = str(tmp_path / "ref.wav")
+    sf.write(ref_path, ref, SR)
+    silent = np.zeros(SR, dtype=np.float32)
+    out = match_rms(silent, ref_path)
+    np.testing.assert_array_equal(out, silent)
 
 
 # ---------- mix：轻混响与整曲合成 ----------
