@@ -1,0 +1,17 @@
+# YingMusic-Singer-Plus 本机 Gradio 联调依赖（macOS arm64 / 独立 venv：.venv-yingmusic）
+# 在 yingmusic-requirements.txt 精简推理清单之上，补齐 app_local.py 启动所需：
+# 1) Gradio Web 界面；2) MelBandRoformer 推理链的硬导入（settings/model_utils/bs_roformer）。
+# 版本对齐上游 requirements.txt 与 MusicSourceSeparationTraining/requirements.txt。
+-r yingmusic-requirements.txt
+
+# ---- Gradio 界面 ----
+gradio
+
+# ---- MelBandRoformer 推理链额外依赖 ----
+ml-collections==1.1.0
+loralib==0.1.2
+rotary-embedding-torch==0.8.9
+beartype==0.14.1
+hyper-connections==0.1.11
+matplotlib==3.10.8
+wandb==0.22.1

@@ -106,7 +106,32 @@ WhisperX small 识别抽查（注意 `huangshazima.lrc` 是改词目标稿《干
   `--ref_audio/--melody_audio/--ref_text/--target_text`，输出 44.1kHz 立体声需 downmix
 - 止损规则按文档第七节执行
 
-### P2 · Gradio 界面（未开始）
+### P2 · Gradio 界面（本机联调已打通，2026-11-25）
+
+直接复用上游 [YingMusic-Singer-Plus](https://github.com/ASLP-lab/YingMusic-Singer-Plus)
+官方 `app_local.py`，不另写界面。第三方仓库克隆到 `third_party/`（已 gitignore），
+与 P0 主环境隔离：
+
+```bash
+git clone --depth 1 https://github.com/ASLP-lab/YingMusic-Singer-Plus.git \
+    third_party/YingMusic-Singer-Plus
+uv venv --python 3.11 .venv-yingmusic
+uv pip install --python .venv-yingmusic/bin/python -r deploy/yingmusic-gradio-requirements.txt
+# 权重：MelBandRoformer 871MB 落 ckpts/，主模型 2.8GB 落 HF 缓存
+(cd third_party/YingMusic-Singer-Plus && ../../.venv-yingmusic/bin/python initialization.py --task infer)
+.venv-yingmusic/bin/python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download('ASLP-lab/YingMusic-Singer-Plus', allow_patterns=['config.json','model.safetensors'])"
+# 启动（启动器内置 espeak 惰性桩，第三方仓库零侵入）
+.venv-yingmusic/bin/python deploy/run_yingmusic_gradio.py   # http://127.0.0.1:7860
+```
+
+本机实测（M2 Pro / CPU）：6.5s 中文示例改词合成约 22s，输出 44.1kHz 立体声，
+时长与输入一致；API 级冒烟脚本见 `deploy/gradio_smoke_test.py`，
+产物在 `output/gradio_smoke/`。两个本机适配点：
+
+- 本机 Homebrew 仅 x86_64 libespeak-ng，arm64 Python 无法加载，启动器复用
+  `sing_adapter.py` 的 EspeakBackend 惰性桩（中文 g2p 走 pypinyin+BERT ONNX，不依赖 espeak）
+- Gradio 6 的 call API 文件入参需 FileData 结构（含 `meta._type`），裸路径会被 pydantic 拒绝
 
 ## 已知限制（交付时需附）
 

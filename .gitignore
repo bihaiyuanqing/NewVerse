@@ -1,9 +1,11 @@
 .venv/
+.venv-yingmusic/
 __pycache__/
 *.pyc
 .pytest_cache/
 output/
 models/
 weights/
+third_party/
 .DS_Store
 *.egg-info/
